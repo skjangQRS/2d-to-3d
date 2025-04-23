@@ -434,3 +434,97 @@ def process_depth_task():
 
 def process_depth():
     threading.Thread(target=process_depth_task, daemon=True).start()
+
+
+# --------------------------------------------------
+# 5) 포인트 클라우드 생성 함수
+# --------------------------------------------------
+def generate_points_with_normals(raw_depth_input, color_image_input, f_px_input):
+    """배경(NaN) 영역은 포인트 생성 안됨"""
+    if raw_depth_input is None or color_image_input is None or f_px_input is None:
+        print("Error: Missing input for PCD gen.")
+        return None, None, None
+
+    current_raw_depth = raw_depth_input.copy()
+    current_color_image = color_image_input.copy()
+    current_f_px = f_px_input
+
+    # color_image_input => PIL RGB (또는 RGBA -> RGB 변환)
+    if not isinstance(current_color_image, Image.Image):
+        try:
+            if (isinstance(current_color_image, np.ndarray) and
+                current_color_image.ndim == 3 and current_color_image.shape[2] == 3):
+                current_color_image = Image.fromarray(current_color_image)
+            else:
+                raise TypeError("Need PIL Image or compatible NumPy array.")
+        except Exception as conv_err:
+            print(f"Error converting to PIL: {conv_err}")
+            return None, None, None
+
+    if current_color_image.mode not in ['RGB', 'RGBA']:
+        current_color_image = current_color_image.convert('RGB')
+
+    H, W = current_raw_depth.shape[:2]
+    img_W, img_H = current_color_image.size
+
+    # 사이즈 맞추기
+    if (W, H) != (img_W, img_H):
+        print(f"Warning: Resizing color {current_color_image.size} -> {(W, H)} for PCD.")
+        try:
+            resample = Image.Resampling.NEAREST
+        except AttributeError:
+            resample = Image.NEAREST
+        current_color_image = current_color_image.resize((W, H), resample)
+
+    # ### CHANGED: valid_depth_mask에서 NaN 제외
+    valid_depth_mask = (~np.isnan(current_raw_depth)) & (current_raw_depth > 1e-6)
+
+    if not valid_depth_mask.any():
+        print("Error: No valid depth points.")
+        return None, None, None
+
+    color_np = np.array(current_color_image)  # HxW x (3 or 4)
+    cx, cy = W / 2.0, H / 2.0
+    u_coords, v_coords = np.meshgrid(np.arange(W), np.arange(H))
+
+    Z = current_raw_depth[valid_depth_mask]
+    X = (u_coords[valid_depth_mask] - cx) * Z / current_f_px
+    Y = (v_coords[valid_depth_mask] - cy) * Z / current_f_px
+    points = np.vstack((X, Y, Z)).T
+
+    # 색상 sampling
+    if color_np.shape[2] == 4:
+        # RGBA -> RGB
+        color_np = color_np[..., :3]  # 앞 3채널만
+    colors = color_np[valid_depth_mask] / 255.0
+    if colors.shape[0] != points.shape[0]:
+        print(f"Count mismatch: {colors.shape[0]} vs {points.shape[0]}")
+        return None, None, None
+
+    # 노멀 추정
+    normals = None
+    if points.shape[0] > 30:
+        try:
+            pcd = o3d.geometry.PointCloud()
+            pcd.points = o3d.utility.Vector3dVector(points)
+            pcd.colors = o3d.utility.Vector3dVector(colors)
+            print("Estimating normals...")
+            search_param = o3d.geometry.KDTreeSearchParamHybrid(radius=max(W, H) * 0.01, max_nn=30)
+            pcd.estimate_normals(search_param=search_param)
+            pcd.orient_normals_towards_camera_location(camera_location=np.array([0., 0., 0.]))
+
+            if pcd.has_normals():
+                normals = np.asarray(pcd.normals)
+                nan_mask = np.isnan(normals).any(axis=1)
+                if np.sum(nan_mask) > 0:
+                    print(f"Warning: Found NaN normals. Replacing.")
+                    normals[nan_mask] = [0, 0, -1]
+            else:
+                print("Warning: Normal estimation failed.")
+        except Exception as e:
+            print(f"Could not estimate normals: {e}")
+            traceback.print_exc()
+    else:
+        print("Warning: Not enough points for normals.")
+
+    return points, colors, normals
