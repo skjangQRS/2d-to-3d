@@ -9,6 +9,12 @@ import cv2
 import os
 import open3d as o3d
 
+# Tkinter의 messagebox를 사용하기 전에 루트 윈도우가 필요하다.
+# 오류 발생 시 메시지를 보여주기 위해 미리 생성해 두고,
+# 본격적인 UI 초기화는 하단에서 진행한다.
+root = tk.Tk()
+root.withdraw()
+
 # --- 추가: RMBG 모델 임포트 ---
 from transformers import AutoModelForImageSegmentation
 from torchvision import transforms
@@ -985,7 +991,7 @@ def process_mesh_creation():
 # --------------------------------------------------
 # 11) Tkinter UI 설정
 # --------------------------------------------------
-root = tk.Tk()
+root.deiconify()
 root.title("ML Depth Pro - Simple")
 root.geometry("1300x750")
 root.grid_rowconfigure(0, weight=1)
